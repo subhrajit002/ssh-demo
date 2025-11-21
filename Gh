@@ -1,0 +1,121 @@
+@Service
+public class DailySalesService {
+
+    @Autowired JdbcTemplate jdbc;
+
+    public Map<String, Double> calculateDailySales(long productId, long locationId, int duration) {
+
+        // 1. Detect which table contains this product & location
+        TableInfo table = detectTable(productId, locationId);
+
+        // 2. Fetch start date + terms from detected table
+        DataSet data = loadTerms(table.tableName, productId, locationId);
+
+        // 3. Now generate daily values
+        return expandToDailyValues(data.startDate, data.terms, table.type, duration);
+    }
+
+    // -------------------------------
+    // DETECT TABLE
+    // -------------------------------
+    private TableInfo detectTable(long productId, long loc) {
+
+        if (exists("weekly_table", productId, loc))
+            return new TableInfo("weekly_table", "WEEKLY");
+
+        if (exists("monthly_table", productId, loc))
+            return new TableInfo("monthly_table", "MONTHLY");
+
+        if (exists("quarterly_table", productId, loc))
+            return new TableInfo("quarterly_table", "QUARTERLY");
+
+        throw new RuntimeException("Product/Location not found in any table");
+    }
+
+    private boolean exists(String table, long p, long l) {
+        String sql = "SELECT COUNT(*) FROM " + table +
+                     " WHERE product_id=? AND location_id=?";
+        Integer count = jdbc.queryForObject(sql, Integer.class, p, l);
+        return count != null && count > 0;
+    }
+
+    // -------------------------------
+    // LOAD TERMS
+    // -------------------------------
+    private DataSet loadTerms(String table, long p, long l) {
+
+        return jdbc.queryForObject(
+            "SELECT date, term1, term2, term3, term4, ... up to max terms FROM " + table +
+            " WHERE product_id=? AND location_id=?",
+            (rs, row) -> {
+
+                LocalDate start = rs.getDate("date").toLocalDate();
+
+                List<Double> termList = new ArrayList<>();
+                int col = 1;
+
+                while (true) {
+                    try {
+                        double v = rs.getDouble("term" + col);
+                        termList.add(v);
+                        col++;
+                    } catch (SQLException e) {
+                        break; // no more term columns
+                    }
+                }
+
+                return new DataSet(start, termList);
+            },
+            p, l
+        );
+    }
+
+    // -------------------------------
+    // SPLIT TERMS INTO DAILY
+    // -------------------------------
+    private Map<String, Double> expandToDailyValues(
+            LocalDate start,
+            List<Double> terms,
+            String type,
+            int duration) {
+
+        Map<String, Double> result = new LinkedHashMap<>();
+
+        LocalDate current = start;
+
+        for (double termValue : terms) {
+
+            int daysInTerm = 0;
+
+            if (type.equals("WEEKLY")) {
+                daysInTerm = 7;
+            }
+            else if (type.equals("MONTHLY")) {
+                YearMonth ym = YearMonth.from(current);
+                daysInTerm = ym.lengthOfMonth();
+            }
+            else if (type.equals("QUARTERLY")) {
+                LocalDate endQ = current.plusMonths(3).minusDays(1);
+                daysInTerm = (int) ChronoUnit.DAYS.between(current, endQ) + 1;
+            }
+
+            double dailyValue = termValue / daysInTerm;
+
+            for (int i = 0; i < daysInTerm; i++) {
+
+                if (result.size() == duration) return result; // stop
+
+                result.put(current.toString(), dailyValue);
+                current = current.plusDays(1);
+            }
+        }
+
+        return result;
+    }
+
+    // -----------------------------------
+    // Internal Classes
+    // -----------------------------------
+    record TableInfo(String tableName, String type) {}
+    record DataSet(LocalDate startDate, List<Double> terms) {}
+}
