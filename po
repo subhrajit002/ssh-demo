@@ -1,201 +1,89 @@
-package com.example.safetystock.service;
+public Map<LocalDate, Double> avgDailySales(
+        String productId,
+        String locationId,
+        LocalDate startDate,
+        int duration
+) {
 
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.http.ResponseEntity;
-import org.springframework.stereotype.Service;
+    Map<LocalDate, Double> response = new LinkedHashMap<>();
 
-import java.time.LocalDate;
-import java.util.*;
-
-@Service
-public class SafetyStockService {
-
-    @Autowired
-    private JdbcTemplate jdbc;
-
-    public ResponseEntity<?> calculateSafetyStock(String productId, String locationId, int subRule) {
-        try {
-            // Common data for both formulas
-            double zValue = fetchZValue(productId, locationId);
-            double avgLeadTime = fetchAverageLeadTime(productId, locationId);
-            double avgSales = fetchAverageSales(productId, locationId);
-
-            double leadTimeVariance = fetchLeadTimeVariance();
-            double leadTimeStdDev = Math.sqrt(Math.max(0.0, leadTimeVariance));
-
-            int duration = fetchDuration(productId, locationId);
-            LocalDate startDate = fetchStartDate(productId, locationId);
-
-            Map<String, Object> demandRow = fetchDemandRow(productId, locationId);
-            LocalDate term1Start = ((java.sql.Date) demandRow.get("date")).toLocalDate();
-
-            List<Map<String, Object>> output = new ArrayList<>();
-            List<Double> accumulatedDailyDemand = new ArrayList<>();
-
-            for (int i = 0; i < duration; i++) {
-
-                LocalDate currentDate = startDate.plusDays(i);
-
-                double todayDailyDemand =
-                        computeDailyDemandForDate(currentDate, term1Start, demandRow);
-
-                accumulatedDailyDemand.add(todayDailyDemand);
-
-                double demandVariance = populationVariance(accumulatedDailyDemand);
-                double demandStdDev = Math.sqrt(Math.max(0.0, demandVariance));
-
-                double safetyStock;
-
-                // -----------------------------------------------------
-                //               APPLY RULE BASED FORMULA
-                // -----------------------------------------------------
-                if (subRule == 1) {
-                    // Formula 1:
-                    // SS = Z * sqrt( LT * Var(Demand) + AvgSales * Var(LeadTime) )
-                    safetyStock = zValue *
-                            Math.sqrt(
-                                    (avgLeadTime * demandVariance)
-                                            + (avgSales * leadTimeVariance)
-                            );
-
-                } else if (subRule == 2) {
-                    // Formula 2:
-                    // SS = Z * σ(Demand) * sqrt(LT) + Z * AvgSales * σ(LeadTime)
-                    safetyStock =
-                            (zValue * demandStdDev * Math.sqrt(avgLeadTime)) +
-                                    (zValue * avgSales * leadTimeStdDev);
-
-                } else {
-                    return ResponseEntity.badRequest().body("Invalid subRule. Use 1 or 2.");
-                }
-
-                Map<String, Object> rec = new HashMap<>();
-                rec.put("date", currentDate.toString());
-                rec.put("safetyStock", safetyStock);
-
-                output.add(rec);
-            }
-
-            return ResponseEntity.ok(output);
-
-        } catch (Exception ex) {
-            return ResponseEntity.status(500).body("Error calculating safety stock");
-        }
+    if (productId == null || locationId == null || startDate == null || duration <= 0) {
+        return response;
     }
 
-    // --------------------------------------------------------------
-    //                        SUPPORT METHODS
-    // --------------------------------------------------------------
+    String sql = "SELECT * FROM " + historic_sales +
+            " WHERE product_id = ? AND location_id = ? AND type = '1'";
 
-    private double fetchZValue(String productId, String locationId) {
-        String sql = "SELECT csl FROM rp_sku_ss_param WHERE product_id=? AND location_id=?";
-        return jdbc.queryForObject(sql, Double.class, productId, locationId);
+    Map<String, Object> row;
+    try {
+        row = jdbcTemplate.queryForMap(sql, productId, locationId);
+    } catch (EmptyResultDataAccessException e) {
+        return response;
     }
 
-    private double fetchAverageLeadTime(String productId, String locationId) {
-        String sql = "SELECT max_lt, min_lt FROM rp_sku_ss_param WHERE product_id=? AND location_id=?";
-        Map<String, Object> row = jdbc.queryForMap(sql, productId, locationId);
-
-        double maxLt = ((Number) row.get("max_lt")).doubleValue();
-        double minLt = ((Number) row.get("min_lt")).doubleValue();
-
-        return (maxLt + minLt) / 2.0;
+    // -------- BASE DATE (TERM1 START) --------
+    Object dateObj = row.get("date");
+    if (dateObj == null) {
+        return response;
     }
 
-    private int fetchDuration(String productId, String locationId) {
-        String sql = "SELECT ss_dur FROM rp_sku_ss_param WHERE product_id=? AND location_id=?";
-        return jdbc.queryForObject(sql, Integer.class, productId, locationId);
+    LocalDate baseDate;
+    if (dateObj instanceof java.sql.Date) {
+        baseDate = ((java.sql.Date) dateObj).toLocalDate();
+    } else if (dateObj instanceof LocalDate) {
+        baseDate = (LocalDate) dateObj;
+    } else {
+        return response;
     }
 
-    private LocalDate fetchStartDate(String productId, String locationId) {
-        String sql = "SELECT oh_stock_date FROM date_table WHERE product_id=? AND location_id=?";
-        return jdbc.queryForObject(sql, LocalDate.class, productId, locationId);
+    long daysDiff = ChronoUnit.DAYS.between(baseDate, startDate);
+    if (daysDiff < 0) {
+        return response;
     }
 
-    private Map<String, Object> fetchDemandRow(String productId, String locationId) {
-        String sql = "SELECT * FROM bl_dmd_unit WHERE product_id=? AND location_id=? LIMIT 1";
-        return jdbc.queryForMap(sql, productId, locationId);
+    int termIndex = (int) (daysDiff / 7) + 1;
+    int dayOffset = (int) (daysDiff % 7);
+
+    if (termIndex > 104) {
+        return response;
     }
 
-    private double computeDailyDemandForDate(LocalDate current, LocalDate term1Start, Map<String, Object> row) {
+    double totalSales = 0.0;
+    int daysCounted = 0;
 
-        long daysBetween = java.time.temporal.ChronoUnit.DAYS.between(term1Start, current);
+    int currentTerm = termIndex;
+    int currentDayOffset = dayOffset;
 
-        int termIndex = (int) (daysBetween / 7) + 1;
+    // -------- ACCUMULATE SALES --------
+    while (daysCounted < duration && currentTerm <= 104) {
 
-        if (termIndex < 1 || termIndex > 104)
-            return 0;
-
-        String termCol = "term" + termIndex;
-        double weekly = ((Number) row.get(termCol)).doubleValue();
-
-        return weekly / 7.0;
-    }
-
-    private double populationVariance(List<Double> values) {
-        if (values.isEmpty())
-            return 0.0;
-
-        double mean = values.stream().mapToDouble(v -> v).average().orElse(0.0);
-
-        return values.stream()
-                .mapToDouble(v -> Math.pow(v - mean, 2))
-                .average()
-                .orElse(0.0);
-    }
-
-    private double fetchAverageSales(String productId, String locationId) {
-        return 500; // replace
-    }
-
-    private double fetchLeadTimeVariance() {
-        String sql = "SELECT lead_time FROM ss_lead_time";
-        List<Double> lt = jdbc.query(sql, (rs, r) -> rs.getDouble("lead_time"));
-
-        if (lt.isEmpty()) return 0;
-
-        double mean = lt.stream().mapToDouble(v -> v).average().orElse(0.0);
-
-        return lt.stream()
-                .mapToDouble(v -> Math.pow(v - mean, 2))
-                .average()
-                .orElse(0.0);
-    }
-}
-
-
-
-package com.example.safetystock.controller;
-
-import com.example.safetystock.service.SafetyStockService;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-import org.springframework.beans.factory.annotation.Autowired;
-
-import java.util.Map;
-
-@RestController
-@RequestMapping("/api/safety-stock")
-public class SafetyStockController {
-
-    @Autowired
-    private SafetyStockService safetyStockService;
-
-    @PostMapping("/calculate")
-    public ResponseEntity<?> calculateSafetyStock(@RequestBody Map<String, Object> request) {
-
-        String productId = (String) request.get("productId");
-        String locationId = (String) request.get("locationId");
-        Integer subRule = (Integer) request.get("subRule");
-
-        if (productId == null || locationId == null || subRule == null) {
-            return ResponseEntity.badRequest()
-                    .body("productId, locationId and subRule are required");
+        Object termObj = row.get("term" + currentTerm);
+        if (!(termObj instanceof Number)) {
+            break;
         }
 
-        return safetyStockService.calculateSafetyStock(productId, locationId, subRule);
+        double weeklySales = ((Number) termObj).doubleValue();
+        double perDaySales = weeklySales / 7.0;
+
+        for (int d = currentDayOffset; d < 7 && daysCounted < duration; d++) {
+            totalSales += perDaySales;
+            daysCounted++;
+        }
+
+        currentTerm++;
+        currentDayOffset = 0;
     }
+
+    if (daysCounted == 0) {
+        return response;
+    }
+
+    double avgDailySales = totalSales / daysCounted;
+
+    // -------- FINAL RESPONSE --------
+    for (int i = 0; i < daysCounted; i++) {
+        response.put(startDate.plusDays(i), avgDailySales);
+    }
+
+    return response;
 }
-
-
