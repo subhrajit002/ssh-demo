@@ -1,89 +1,81 @@
-public Map<LocalDate, Double> avgDailySales(
-        String productId,
-        String locationId,
-        LocalDate startDate,
-        int duration
-) {
+import { useState, useRef, useEffect } from "react";
+import "bootstrap/dist/css/bootstrap.min.css";
 
-    Map<LocalDate, Double> response = new LinkedHashMap<>();
+export default function MultiSelectDropdown() {
+  const options = [
+    "Option 1",
+    "Option 2",
+    "Option 3",
+    "Option 4",
+    "Option 5",
+    "Option 6",
+  ];
 
-    if (productId == null || locationId == null || startDate == null || duration <= 0) {
-        return response;
-    }
+  const [selected, setSelected] = useState([]);
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef(null);
 
-    String sql = "SELECT * FROM " + historic_sales +
-            " WHERE product_id = ? AND location_id = ? AND type = '1'";
+  const handleChange = (e) => {
+    const selectedValues = Array.from(e.target.selectedOptions).map(
+      (opt) => opt.value
+    );
+    setSelected(selectedValues);
+  };
 
-    Map<String, Object> row;
-    try {
-        row = jdbcTemplate.queryForMap(sql, productId, locationId);
-    } catch (EmptyResultDataAccessException e) {
-        return response;
-    }
+  // close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
-    // -------- BASE DATE (TERM1 START) --------
-    Object dateObj = row.get("date");
-    if (dateObj == null) {
-        return response;
-    }
+  return (
+    <div
+      className="container mt-4"
+      style={{ maxWidth: "260px" }}
+      ref={wrapperRef}
+    >
+      <label className="mb-1 fw-semibold" style={{ fontSize: "14px" }}>
+        Multi-Select Dropdown
+      </label>
 
-    LocalDate baseDate;
-    if (dateObj instanceof java.sql.Date) {
-        baseDate = ((java.sql.Date) dateObj).toLocalDate();
-    } else if (dateObj instanceof LocalDate) {
-        baseDate = (LocalDate) dateObj;
-    } else {
-        return response;
-    }
+      {/* Closed view */}
+      <div
+        className="form-select d-flex justify-content-between align-items-center"
+        style={{ fontSize: "13px", cursor: "pointer" }}
+        onClick={() => setOpen(!open)}
+      >
+        <span className={selected.length ? "text-dark" : "text-muted"}>
+          {selected.length ? selected.join(", ") : "Select options..."}
+        </span>
+        <span>▼</span>
+      </div>
 
-    long daysDiff = ChronoUnit.DAYS.between(baseDate, startDate);
-    if (daysDiff < 0) {
-        return response;
-    }
+      {/* Open dropdown */}
+      {open && (
+        <select
+          multiple
+          className="form-select mt-1"
+          value={selected}
+          onChange={handleChange}
+          size={6}
+          style={{ fontSize: "13px" }}
+        >
+          {options.map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+        </select>
+      )}
 
-    int termIndex = (int) (daysDiff / 7) + 1;
-    int dayOffset = (int) (daysDiff % 7);
-
-    if (termIndex > 104) {
-        return response;
-    }
-
-    double totalSales = 0.0;
-    int daysCounted = 0;
-
-    int currentTerm = termIndex;
-    int currentDayOffset = dayOffset;
-
-    // -------- ACCUMULATE SALES --------
-    while (daysCounted < duration && currentTerm <= 104) {
-
-        Object termObj = row.get("term" + currentTerm);
-        if (!(termObj instanceof Number)) {
-            break;
-        }
-
-        double weeklySales = ((Number) termObj).doubleValue();
-        double perDaySales = weeklySales / 7.0;
-
-        for (int d = currentDayOffset; d < 7 && daysCounted < duration; d++) {
-            totalSales += perDaySales;
-            daysCounted++;
-        }
-
-        currentTerm++;
-        currentDayOffset = 0;
-    }
-
-    if (daysCounted == 0) {
-        return response;
-    }
-
-    double avgDailySales = totalSales / daysCounted;
-
-    // -------- FINAL RESPONSE --------
-    for (int i = 0; i < daysCounted; i++) {
-        response.put(startDate.plusDays(i), avgDailySales);
-    }
-
-    return response;
+      <div className="mt-1 text-muted" style={{ fontSize: "11px" }}>
+        Hold <b>Ctrl</b> (or Cmd) to select multiple
+      </div>
+    </div>
+  );
 }
