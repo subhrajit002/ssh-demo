@@ -1,81 +1,55 @@
-import { useState, useRef, useEffect } from "react";
-import "bootstrap/dist/css/bootstrap.min.css";
+import { useState } from "react";
+import axios from "axios";
 
-export default function MultiSelectDropdown() {
-  const options = [
-    "Option 1",
-    "Option 2",
-    "Option 3",
-    "Option 4",
-    "Option 5",
-    "Option 6",
-  ];
+export default function useAuditCache() {
+  const [auditCache, setAuditCache] = useState([]);
 
-  const [selected, setSelected] = useState([]);
-  const [open, setOpen] = useState(false);
-  const wrapperRef = useRef(null);
-
-  const handleChange = (e) => {
-    const selectedValues = Array.from(e.target.selectedOptions).map(
-      (opt) => opt.value
+  const refreshAudit = async (productId, locationId) => {
+    const res = await axios.get(
+      `${process.env.REACT_APP_API_URL}/api/audit-logs/latest`,
+      { params: { productId, locationId } }
     );
-    setSelected(selectedValues);
+    setAuditCache(res.data);
   };
 
-  // close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  return (
-    <div
-      className="container mt-4"
-      style={{ maxWidth: "260px" }}
-      ref={wrapperRef}
-    >
-      <label className="mb-1 fw-semibold" style={{ fontSize: "14px" }}>
-        Multi-Select Dropdown
-      </label>
-
-      {/* Closed view */}
-      <div
-        className="form-select d-flex justify-content-between align-items-center"
-        style={{ fontSize: "13px", cursor: "pointer" }}
-        onClick={() => setOpen(!open)}
-      >
-        <span className={selected.length ? "text-dark" : "text-muted"}>
-          {selected.length ? selected.join(", ") : "Select options..."}
-        </span>
-        <span>▼</span>
-      </div>
-
-      {/* Open dropdown */}
-      {open && (
-        <select
-          multiple
-          className="form-select mt-1"
-          value={selected}
-          onChange={handleChange}
-          size={6}
-          style={{ fontSize: "13px" }}
-        >
-          {options.map((opt) => (
-            <option key={opt} value={opt}>
-              {opt}
-            </option>
-          ))}
-        </select>
-      )}
-
-      <div className="mt-1 text-muted" style={{ fontSize: "11px" }}>
-        Hold <b>Ctrl</b> (or Cmd) to select multiple
-      </div>
-    </div>
-  );
+  return { auditCache, refreshAudit };
 }
+
+import useAuditCache from "../hooks/useAuditCache";
+
+const { auditCache, refreshAudit } = useAuditCache();
+
+const handleMouseEnter = async (e, termKey, type) => {
+  const [productId, locationId] = selectedKey.split("@");
+
+  // 🔥 Always refresh before tooltip
+  await refreshAudit(productId, locationId);
+
+  const latestAudit = auditCache.find(
+    a => a.column === termKey && a.where_condition === type
+  );
+
+  if (!latestAudit) return;
+
+  setTooltipData({
+    visible: true,
+    user: latestAudit.userid,
+    before: latestAudit.values_before,
+    after: latestAudit.values_after,
+    time: new Date(latestAudit.timestamp).toLocaleString(),
+    x: e.clientX,
+    y: e.clientY
+  });
+};
+
+
+Worksheet.jsx (FIXED)
+axios.post("/publishForecastData", body)
+  .then(() => {
+    refreshAudit(productId, locationId); // ✅ shared hook
+  });
+
+
+
+
+
