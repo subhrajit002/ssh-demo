@@ -76,4 +76,16 @@ public class DatabaseManagerController {
         return "Column added successfully";
     }
 
+    @PostMapping("/update-ext-count")
+    public Map<String, Object> updateExtensionCount(
+            @RequestParam String schema,
+            @RequestParam String table,
+            @RequestParam int newExtCount,
+            @RequestParam String configType, // DP or RP
+            @RequestParam(defaultValue = "false") boolean forceDrop) {
+
+        return databaseManagerService.updateTableExtension(
+                schema, table, newExtCount, configType, forceDrop);
+    }
+
 }
