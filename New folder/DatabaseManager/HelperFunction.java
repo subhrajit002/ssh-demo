@@ -1,5 +1,6 @@
 package com.restAPIJAVA.demo.service.DatabaseManager;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -264,33 +265,132 @@ public class HelperFunction {
         }
     }
 
-    private String buildAlterTableQuery(
+    public Map<String, Object> handleTableExtension(
             String schema,
             String table,
-            String column,
-            String datatype) {
+            int newExtCount,
+            String configType,
+            boolean forceDrop) {
 
-        return "ALTER TABLE " +
-                schema + "." + table +
-                " ADD " + column + " " + datatype;
+        validateInputs(schema, table, newExtCount, configType);
+        validateTableIsUpdatable(schema, table);
+
+        int currentExtCount = fetchCurrentExtCount(table, configType);
+
+        if (newExtCount == currentExtCount) {
+            return response("SUCCESS", "No change in extension count", currentExtCount, newExtCount);
+        }
+
+        if (newExtCount > currentExtCount) {
+            addTermColumns(schema, table, currentExtCount + 1, newExtCount);
+        } else {
+            boolean hasData = checkDataExists(
+                    schema, table, newExtCount + 1, currentExtCount);
+
+            if (hasData && !forceDrop) {
+                return warningResponse(newExtCount + 1, currentExtCount);
+            }
+
+            dropTermColumns(schema, table, newExtCount + 1, currentExtCount);
+        }
+
+        updateExtCount(table, newExtCount, configType);
+
+        return response("SUCCESS", "Extension updated successfully", currentExtCount, newExtCount);
+    }
+
+    /* ======================= HELPERS ======================= */
+
+    private void validateInputs(String schema, String table, int newExtCount, String configType) {
+        if (schema == null || table == null || configType == null) {
+            throw new IllegalArgumentException("Invalid input");
+        }
+        if (newExtCount < 0) {
+            throw new IllegalArgumentException("ext_count cannot be negative");
+        }
     }
 
     private void validateTableIsUpdatable(String schema, String table) {
-
-        Boolean isUpdatable = jdbcTemplate.queryForObject(
+        Boolean updatable = jdbcTemplate.queryForObject(
                 DatabaseManagerQuery.CHECK_TABLE_UPDATABLE,
                 Boolean.class,
                 schema,
                 table);
 
-        if (isUpdatable == null) {
+        if (updatable == null) {
             throw new IllegalStateException("Table metadata not found");
         }
 
-        if (!isUpdatable) {
+        if (!updatable) {
             throw new IllegalStateException(
                     "Table is not user updatable. ALTER operations are not allowed.");
         }
     }
 
+    private int fetchCurrentExtCount(String table, String configType) {
+        String sql = configType.equalsIgnoreCase("DP")
+                ? DatabaseManagerQuery.GET_DP_EXT_COUNT
+                : DatabaseManagerQuery.GET_RP_EXT_COUNT;
+
+        return jdbcTemplate.queryForObject(sql, Integer.class, table);
+    }
+
+    private void addTermColumns(String schema, String table, int start, int end) {
+        for (int i = start; i <= end; i++) {
+            jdbcTemplate.execute(
+                    "ALTER TABLE " + schema + "." + table +
+                            " ADD term" + i + " VARCHAR(255)");
+        }
+    }
+
+    private boolean checkDataExists(String schema, String table, int start, int end) {
+        StringBuilder sql = new StringBuilder(
+                "SELECT COUNT(*) FROM " + schema + "." + table + " WHERE ");
+
+        for (int i = start; i <= end; i++) {
+            sql.append("term").append(i).append(" IS NOT NULL");
+            if (i < end)
+                sql.append(" OR ");
+        }
+
+        Integer count = jdbcTemplate.queryForObject(sql.toString(), Integer.class);
+        return count != null && count > 0;
+    }
+
+    private void dropTermColumns(String schema, String table, int start, int end) {
+        for (int i = end; i >= start; i--) {
+            jdbcTemplate.execute(
+                    "ALTER TABLE " + schema + "." + table +
+                            " DROP COLUMN term" + i);
+        }
+    }
+
+    private void updateExtCount(String table, int newExtCount, String configType) {
+        String sql = configType.equalsIgnoreCase("DP")
+                ? DatabaseManagerQuery.UPDATE_DP_EXT_COUNT
+                : DatabaseManagerQuery.UPDATE_RP_EXT_COUNT;
+
+        jdbcTemplate.update(sql, newExtCount, table);
+    }
+
+    private Map<String, Object> response(
+            String status, String message, int oldVal, int newVal) {
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("status", status);
+        map.put("message", message);
+        map.put("oldExtCount", oldVal);
+        map.put("newExtCount", newVal);
+        return map;
+    }
+
+    private Map<String, Object> warningResponse(int start, int end) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("status", "WARNING");
+        map.put("message",
+                "Data exists in term columns term" + start +
+                        " to term" + end +
+                        ". Re-submit with forceDrop=true to proceed.");
+        return map;
+    }
 }
