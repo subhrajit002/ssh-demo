@@ -5,6 +5,7 @@ import java.util.Map;
 
 import org.springframework.stereotype.Service;
 
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 
 @RequiredArgsConstructor
@@ -55,6 +56,18 @@ public class DatabaseManagerService {
                 isUcc,
                 isUserUpdatable,
                 dataFieldName);
+    }
+
+    @Transactional
+    public Map<String, Object> updateTableExtension(
+            String schema,
+            String table,
+            int newExtCount,
+            String configType,
+            boolean forceDrop) {
+
+        return helperFunction.handleTableExtension(
+                schema, table, newExtCount, configType, forceDrop);
     }
 
 }
